@@ -1,0 +1,967 @@
+{
+  "name": "Student Assignment - AI Agent RAG Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "AI AGENT WORKFLOW FOR ASSIGNMENT\n\nThis workflow shows two main parts:\n1. Uploading and indexing documents\n2. Asking questions and getting answers from those documents\n\nIt also shows tool usage, memory, caching, and cost control. Placeholder API URLs can be replaced with real services later.",
+        "height": 300,
+        "width": 440,
+        "color": 4
+      },
+      "id": "note-architecture-overview",
+      "name": "Project Note - What This Workflow Shows",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -780,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-rag-ingest",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "id": "webhook-ingest",
+      "name": "1. Upload Document Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -760,
+        40
+      ],
+      "webhookId": "agent-rag-ingest"
+    },
+    {
+      "parameters": {
+        "jsCode": "const binaryKeys = Object.keys($binary || {});\nconst fileKey = binaryKeys[0];\nconst file = fileKey ? $binary[fileKey] : null;\n\nif (!file) {\n  throw new Error('No file uploaded. Send a PDF/DOCX/TXT file as binary form-data.');\n}\n\nconst allowedExtensions = ['pdf', 'docx', 'txt'];\nconst fileName = file.fileName || 'uploaded-file';\nconst extension = fileName.split('.').pop().toLowerCase();\n\nif (!allowedExtensions.includes(extension)) {\n  throw new Error(`Unsupported file type: ${extension}. Allowed: PDF, DOCX, TXT.`);\n}\n\nconst maxSizeMb = 25;\nconst sizeMb = (file.fileSize || 0) / 1024 / 1024;\nif (sizeMb > maxSizeMb) {\n  throw new Error(`File too large: ${sizeMb.toFixed(2)} MB. Max allowed: ${maxSizeMb} MB.`);\n}\n\nreturn [{\n  json: {\n    fileName,\n    extension,\n    fileKey,\n    sourceType: 'user_upload',\n    uploadedAt: new Date().toISOString(),\n    status: 'validated'\n  },\n  binary: $binary\n}];"
+      },
+      "id": "code-validate-file",
+      "name": "2. Check Uploaded File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "content": "FILE PROCESSING FLOW\n\nUpload document -> Check file -> Extract text -> Split into chunks -> Create embeddings -> Store in vector database.\n\nThis prepares the document so the agent can search it later.",
+        "height": 220,
+        "width": 360,
+        "color": 6
+      },
+      "id": "note-file-handling",
+      "name": "Note - File Processing Steps",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        -250
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-PDF-EXTRACTION-SERVICE.example.com/extract",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "={{ $json.fileKey }}"
+            },
+            {
+              "name": "fileName",
+              "value": "={{ $json.fileName }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-extract-text",
+      "name": "3. Extract Text from Document",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -240,
+        40
+      ],
+      "notes": "In a real project, replace this with your PDF/DOCX extraction service, n8n file extraction node, or custom OCR API. Expected response: { text, pages, metadata }."
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $json.text || $json.extractedText || '';\nconst fileName = $('2. Check Uploaded File').first().json.fileName;\nconst sourceType = $('2. Check Uploaded File').first().json.sourceType;\n\nif (!text.trim()) {\n  throw new Error('No text extracted from uploaded file.');\n}\n\nconst words = text.replace(/\\s+/g, ' ').trim().split(' ');\nconst chunkSize = 420;\nconst overlap = 60;\nconst chunks = [];\n\nfor (let start = 0; start < words.length; start += chunkSize - overlap) {\n  const chunkWords = words.slice(start, start + chunkSize);\n  if (chunkWords.length < 30) continue;\n  chunks.push({\n    chunkId: `${fileName.replace(/[^a-zA-Z0-9]/g, '_')}_${chunks.length + 1}`,\n    fileName,\n    sourceType,\n    chunkIndex: chunks.length + 1,\n    text: chunkWords.join(' '),\n    tokenEstimate: Math.ceil(chunkWords.length * 1.35),\n    createdAt: new Date().toISOString()\n  });\n}\n\nreturn chunks.map(chunk => ({ json: chunk }));"
+      },
+      "id": "code-chunk-text",
+      "name": "4. Split Text into Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": $json.text\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-create-embedding",
+      "name": "5. Create Embeddings for Chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        40
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_OPENAI_HEADER_AUTH",
+          "name": "OpenAI API Key Header"
+        }
+      },
+      "notes": "Create an n8n HTTP Header Auth credential with Header Name: Authorization and Value: Bearer YOUR_OPENAI_API_KEY."
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $('4. Split Text into Chunks').item.json;\nconst embedding = $json.data?.[0]?.embedding || $json.embedding;\n\nif (!embedding) {\n  throw new Error('Embedding API did not return an embedding vector.');\n}\n\nreturn [{\n  json: {\n    id: source.chunkId,\n    vector: embedding,\n    payload: {\n      fileName: source.fileName,\n      sourceType: source.sourceType,\n      chunkIndex: source.chunkIndex,\n      text: source.text,\n      tokenEstimate: source.tokenEstimate,\n      createdAt: source.createdAt\n    }\n  }\n}];"
+      },
+      "id": "code-prepare-vector-upsert",
+      "name": "6. Prepare Chunks for Vector DB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        540,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://YOUR-VECTOR-DB.example.com/collections/agent_knowledge/points",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"points\": [\n    {\n      \"id\": $json.id,\n      \"vector\": $json.vector,\n      \"payload\": $json.payload\n    }\n  ]\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-upsert-vector-db",
+      "name": "7. Store Chunks in Vector DB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        40
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_VECTOR_DB_AUTH",
+          "name": "Vector DB API Key Header"
+        }
+      },
+      "notes": "Replace with Pinecone, Qdrant, Weaviate, Supabase Vector, or your chosen vector database endpoint."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"indexed\",\n  \"message\": \"File chunks were embedded and stored in the vector database.\",\n  \"fileName\": $('2. Check Uploaded File').first().json.fileName\n}",
+        "options": {}
+      },
+      "id": "respond-ingest-complete",
+      "name": "8. File Indexing Complete",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1060,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-agent-chat",
+      "name": "9. Ask Agent Question Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -760,
+        520
+      ],
+      "webhookId": "agent-chat"
+    },
+    {
+      "parameters": {
+        "content": "QUESTION ANSWERING FLOW\n\nUser asks question -> Check cache -> Search vector database -> Select best chunks -> Load memory -> Use tools if needed -> Generate answer -> Save memory.\n\nThis is the RAG part of the agent.",
+        "height": 230,
+        "width": 420,
+        "color": 5
+      },
+      "id": "note-retrieval-flow",
+      "name": "Note - How Retrieval Works",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -780,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || $json;\nconst question = body.question || body.message || '';\nconst userId = body.userId || 'anonymous-user';\nconst sessionId = body.sessionId || `session-${Date.now()}`;\n\nif (!question.trim()) {\n  throw new Error('Missing question. Send { question, userId, sessionId } in the request body.');\n}\n\nconst lower = question.toLowerCase();\nlet intent = 'knowledge_answer';\nif (lower.includes('order') || lower.includes('refund') || lower.includes('ticket') || lower.includes('account')) {\n  intent = 'support_lookup';\n}\nif (lower.includes('summarize') || lower.includes('summary')) {\n  intent = 'summarization';\n}\n\nreturn [{\n  json: {\n    question,\n    userId,\n    sessionId,\n    intent,\n    cacheKey: `${userId}:${question.trim().toLowerCase()}`,\n    maxRetrievedChunks: intent === 'summarization' ? 6 : 4,\n    requestedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "code-normalize-question",
+      "name": "10. Read Question and Find Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://YOUR-CACHE-SERVICE.example.com/cache/{{$json.cacheKey}}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "http-cache-check",
+      "name": "11. Check If Answer Is Cached",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -240,
+        520
+      ],
+      "notes": "Caching reduces cost and latency for repeated questions. Replace this with Redis, database lookup, or n8n data store."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cache-hit-condition",
+              "leftValue": "={{ $json.answer || $json.cachedAnswer || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-cache-hit",
+      "name": "12. Is Cached Answer Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        20,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"answer\": $json.answer || $json.cachedAnswer,\n  \"source\": \"cache\",\n  \"costControl\": \"Returned cached answer to reduce latency and token cost.\"\n}",
+        "options": {}
+      },
+      "id": "respond-cached-answer",
+      "name": "13. Return Cached Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        280,
+        390
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-3-small\",\n  \"input\": $('10. Read Question and Find Intent').first().json.question\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-query-embedding",
+      "name": "14. Create Question Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        650
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_OPENAI_HEADER_AUTH",
+          "name": "OpenAI API Key Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const embedding = $json.data?.[0]?.embedding || $json.embedding;\nconst request = $('10. Read Question and Find Intent').first().json;\nif (!embedding) {\n  throw new Error('Query embedding was not returned.');\n}\nreturn [{\n  json: {\n    vector: embedding,\n    question: request.question,\n    userId: request.userId,\n    sessionId: request.sessionId,\n    intent: request.intent,\n    cacheKey: request.cacheKey,\n    maxRetrievedChunks: request.maxRetrievedChunks\n  }\n}];"
+      },
+      "id": "code-build-vector-search",
+      "name": "15. Prepare Vector Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        540,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-VECTOR-DB.example.com/collections/agent_knowledge/points/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": $json.vector,\n  \"limit\": $json.maxRetrievedChunks,\n  \"with_payload\": true,\n  \"score_threshold\": 0.72\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "http-vector-search",
+      "name": "16. Search Knowledge Base",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        650
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_VECTOR_DB_AUTH",
+          "name": "Vector DB API Key Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('15. Prepare Vector Search').first().json;\nconst results = $json.result || $json.matches || $json.points || [];\n\nconst chunks = results\n  .map((item, index) => ({\n    rank: index + 1,\n    score: item.score || item.similarity || 0,\n    fileName: item.payload?.fileName || item.metadata?.fileName || 'unknown-source',\n    chunkIndex: item.payload?.chunkIndex || item.metadata?.chunkIndex || index + 1,\n    text: item.payload?.text || item.metadata?.text || item.text || ''\n  }))\n  .filter(chunk => chunk.text)\n  .slice(0, request.maxRetrievedChunks);\n\nconst context = chunks.map(chunk => `[Source: ${chunk.fileName}, chunk ${chunk.chunkIndex}, score ${chunk.score}]\\n${chunk.text}`).join('\\n\\n---\\n\\n');\n\nreturn [{\n  json: {\n    ...request,\n    retrievedChunks: chunks,\n    context,\n    retrievalSummary: `${chunks.length} chunks selected for final answer.`\n  }\n}];"
+      },
+      "id": "code-rerank-context-pack",
+      "name": "17. Select Best Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://YOUR-MEMORY-SERVICE.example.com/memory/{{$json.userId}}/{{$json.sessionId}}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "http-load-memory",
+      "name": "18. Load Agent Memory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        650
+      ],
+      "notes": "Short-term memory: current conversation summary. Long-term memory: user preferences, project facts, previous useful summaries."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rag = $('17. Select Best Chunks').first().json;\nconst memory = $json || {};\nconst needsSupportLookup = rag.intent === 'support_lookup';\n\nreturn [{\n  json: {\n    ...rag,\n    memory: {\n      shortTermSummary: memory.shortTermSummary || '',\n      longTermFacts: memory.longTermFacts || [],\n      userPreferences: memory.userPreferences || {}\n    },\n    needsSupportLookup\n  }\n}];"
+      },
+      "id": "code-tool-router",
+      "name": "19. Decide If Tool Is Needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "needs-support-lookup",
+              "leftValue": "={{ $json.needsSupportLookup }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-support-tool-needed",
+      "name": "20. Need CRM or Ticket Lookup?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1840,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://YOUR-CRM.example.com/customers/{{$json.userId}}/support-context",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "http-crm-lookup",
+      "name": "21. Lookup Customer or Ticket Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2100,
+        530
+      ],
+      "notes": "Example tool node. Replace with CRM, order database, ticketing system, or support platform API."
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('19. Decide If Tool Is Needed').first().json;\nconst toolResult = $json || {};\nreturn [{\n  json: {\n    ...base,\n    toolResult\n  }\n}];"
+      },
+      "id": "code-merge-tool-result",
+      "name": "22. Add Tool Result to Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        530
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$json, toolResult: {} } }];"
+      },
+      "id": "code-no-tool-needed",
+      "name": "22B. Continue Without Tool",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        770
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const model = $json.intent === 'knowledge_answer' ? 'gpt-4.1-mini' : 'gpt-4.1';\nconst systemPrompt = 'You are a production support/research/document analysis agent. Answer using retrieved context and tool results. Cite sources when available. If evidence is missing, say what is missing instead of guessing. Keep the answer clear and useful.';\nconst userPrompt = `Question: ${$json.question}\\n\\nRetrieved context:\\n${$json.context}\\n\\nMemory:\\n${JSON.stringify($json.memory)}\\n\\nTool result:\\n${JSON.stringify($json.toolResult)}`;\n\nreturn [{\n  json: {\n    ...$json,\n    llmRequest: {\n      model,\n      temperature: 0.2,\n      messages: [\n        { role: 'system', content: systemPrompt },\n        { role: 'user', content: userPrompt }\n      ]\n    }\n  }\n}];"
+      },
+      "id": "code-prepare-llm-request",
+      "name": "23. Prepare Final AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        650
+      ],
+      "notes": "This keeps the retrieved context, memory, tool result, and cost-control metadata attached before the model call."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.llmRequest }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "http-generate-answer",
+      "name": "24. Generate Final Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2620,
+        650
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_OPENAI_HEADER_AUTH",
+          "name": "OpenAI API Key Header"
+        }
+      },
+      "notes": "Model routing cost control: simple knowledge answers use a smaller model; support lookup and complex tasks use a stronger model."
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $('23. Prepare Final AI Prompt').first().json;\nconst answer = $json.choices?.[0]?.message?.content || $json.answer || '';\nconst usage = $json.usage || {};\n\nreturn [{\n  json: {\n    ...source,\n    answer,\n    modelUsage: usage,\n    sources: source.retrievedChunks.map(chunk => ({\n      fileName: chunk.fileName,\n      chunkIndex: chunk.chunkIndex,\n      score: chunk.score\n    })),\n    memoryUpdate: {\n      latestQuestion: source.question,\n      latestAnswerSummary: answer.slice(0, 700),\n      updatedAt: new Date().toISOString()\n    }\n  }\n}];"
+      },
+      "id": "code-prepare-response",
+      "name": "25. Prepare Answer and Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-MEMORY-SERVICE.example.com/memory",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": $json.userId,\n  \"sessionId\": $json.sessionId,\n  \"shortTermSummary\": $json.memoryUpdate.latestAnswerSummary,\n  \"lastQuestion\": $json.memoryUpdate.latestQuestion,\n  \"updatedAt\": $json.memoryUpdate.updatedAt\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "http-save-memory",
+      "name": "26. Save Short Memory Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3140,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-CACHE-SERVICE.example.com/cache",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"key\": $('25. Prepare Answer and Sources').first().json.cacheKey,\n  \"answer\": $('25. Prepare Answer and Sources').first().json.answer,\n  \"ttlSeconds\": 86400\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "http-cache-answer",
+      "name": "27. Cache Answer for Later",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3140,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"answer\": $('25. Prepare Answer and Sources').first().json.answer,\n  \"sources\": $('25. Prepare Answer and Sources').first().json.sources,\n  \"retrievalSummary\": $('25. Prepare Answer and Sources').first().json.retrievalSummary,\n  \"intent\": $('25. Prepare Answer and Sources').first().json.intent,\n  \"costControlsUsed\": [\"cache check\", \"selective retrieval\", \"model routing\", \"context packing\", \"memory summarization\"],\n  \"modelUsage\": $('25. Prepare Answer and Sources').first().json.modelUsage\n}",
+        "options": {}
+      },
+      "id": "respond-final-answer",
+      "name": "28. Return Final Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3400,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "content": "COST CONTROL METHODS USED\n\n- Cache repeated answers\n- Retrieve only a few useful chunks\n- Use smaller model for simple answers\n- Use stronger model only when needed\n- Store memory as a short summary\n- Set timeouts on tool calls",
+        "height": 310,
+        "width": 420,
+        "color": 3
+      },
+      "id": "note-cost-controls",
+      "name": "Note - Cost Control Methods",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2460,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "1. Upload Document Webhook": {
+      "main": [
+        [
+          {
+            "node": "2. Check Uploaded File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Check Uploaded File": {
+      "main": [
+        [
+          {
+            "node": "3. Extract Text from Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Extract Text from Document": {
+      "main": [
+        [
+          {
+            "node": "4. Split Text into Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Split Text into Chunks": {
+      "main": [
+        [
+          {
+            "node": "5. Create Embeddings for Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Create Embeddings for Chunks": {
+      "main": [
+        [
+          {
+            "node": "6. Prepare Chunks for Vector DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Prepare Chunks for Vector DB": {
+      "main": [
+        [
+          {
+            "node": "7. Store Chunks in Vector DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Store Chunks in Vector DB": {
+      "main": [
+        [
+          {
+            "node": "8. File Indexing Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Ask Agent Question Webhook": {
+      "main": [
+        [
+          {
+            "node": "10. Read Question and Find Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Read Question and Find Intent": {
+      "main": [
+        [
+          {
+            "node": "11. Check If Answer Is Cached",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Check If Answer Is Cached": {
+      "main": [
+        [
+          {
+            "node": "12. Is Cached Answer Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Is Cached Answer Available?": {
+      "main": [
+        [
+          {
+            "node": "13. Return Cached Answer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "14. Create Question Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14. Create Question Embedding": {
+      "main": [
+        [
+          {
+            "node": "15. Prepare Vector Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15. Prepare Vector Search": {
+      "main": [
+        [
+          {
+            "node": "16. Search Knowledge Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16. Search Knowledge Base": {
+      "main": [
+        [
+          {
+            "node": "17. Select Best Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17. Select Best Chunks": {
+      "main": [
+        [
+          {
+            "node": "18. Load Agent Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "18. Load Agent Memory": {
+      "main": [
+        [
+          {
+            "node": "19. Decide If Tool Is Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19. Decide If Tool Is Needed": {
+      "main": [
+        [
+          {
+            "node": "20. Need CRM or Ticket Lookup?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "20. Need CRM or Ticket Lookup?": {
+      "main": [
+        [
+          {
+            "node": "21. Lookup Customer or Ticket Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "22B. Continue Without Tool",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "21. Lookup Customer or Ticket Data": {
+      "main": [
+        [
+          {
+            "node": "22. Add Tool Result to Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "22. Add Tool Result to Context": {
+      "main": [
+        [
+          {
+            "node": "23. Prepare Final AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "22B. Continue Without Tool": {
+      "main": [
+        [
+          {
+            "node": "23. Prepare Final AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "23. Prepare Final AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "24. Generate Final Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "24. Generate Final Answer": {
+      "main": [
+        [
+          {
+            "node": "25. Prepare Answer and Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "25. Prepare Answer and Sources": {
+      "main": [
+        [
+          {
+            "node": "26. Save Short Memory Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "27. Cache Answer for Later",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "28. Return Final Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "timezone": "Asia/Kolkata"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "student-assignment"
+    },
+    {
+      "name": "ai-agent"
+    },
+    {
+      "name": "rag-workflow"
+    }
+  ],
+  "triggerCount": 2,
+  "updatedAt": "2026-06-20T00:00:00.000Z",
+  "versionId": "student-style-agent-rag-workflow-v1"
+}
